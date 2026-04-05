@@ -24,20 +24,23 @@ class TCAResult(BaseModel):
 
 
 # ── Decision maker ─────────────────────────────────────────────
+
 class DecisionMaker:
     """
-    Optimized DecisionMaker for multi-turn jailbreak detection.
-    Thresholds tuned based on T0-T20 conversation logs.
+    Decides whether to ALLOW / WARN / BLOCK a message based on:
+        1. Progressive risk
+        2. Hard flags (e.g., obfuscation or spike)
+        3. Soft flags (trend, sustained)
     """
     def __init__(
         self,
-        t_warn: float = 0.08,           # Lowered from 0.1 to catch early probing
-        t_block: float = 0.16,          # Lowered from 0.2 to stop slow-burn attacks
+        t_warn: float = 0.1,
+        t_block: float = 0.2,
         window_size: int = 3,
-        spike_threshold: float = 0.15,  # More sensitive to sudden jumps
-        trend_threshold: float = 0.03,  # Catches shallow rising slopes
-        sustained_threshold: float = 0.08, # Matches the 'ALLOW [SUSTAINED]' floor in logs
-        obfuscation_threshold: float = 0.12, # Catches the 0.18 obfuscation seen in T17
+        spike_threshold: float = 0.2,
+        trend_threshold: float = 0.05,
+        sustained_threshold: float = 0.09,
+        obfuscation_threshold: float = 0.15,
     ):
         self.t_warn = t_warn
         self.t_block = t_block
@@ -51,6 +54,7 @@ class DecisionMaker:
         self.prev_progressive = 0.0
 
     def decide(self, features: Dict[str, float], risk_scores: Dict[str, float]) -> Dict:
+        """Returns decision, flags, and risk_level."""
         prog = risk_scores["progressive_risk"]
         self.risk_window.append(prog)
 
@@ -66,56 +70,59 @@ class DecisionMaker:
             "risk_level": level,
         }
 
+    def reset(self):
+        self.risk_window.clear()
+        self.prev_progressive = 0.0
+
+    # ── Internal helpers ───────────────────────────────────────
     def _detect_flags(self, features: Dict[str, float], prog: float) -> List[str]:
+        """Detect special flags that influence decision."""
         flags = []
         window = list(self.risk_window)
 
-        # 1. SPIKE: Rapid escalation between turns
+        # Hard override: SPIKE
         if prog - self.prev_progressive > self.spike_threshold:
             flags.append("SPIKE")
 
-        # 2. OBFUSCATION: High effort to hide intent
+        # Hard override: OBFUSCATION
         if features["obfuscation_score"] > self.obfuscation_threshold:
             flags.append("OBFUSCATION")
 
-        # 3. TREND: Consistency in rising risk
+        # Soft flags: TREND
         if len(window) >= 3 and self._slope(window) > self.trend_threshold:
             flags.append("TREND")
 
-        # 4. SUSTAINED: High average risk over the window
-        if len(window) >= 3 and (sum(window) / len(window)) > self.sustained_threshold:
+        # Soft flags: SUSTAINED
+        if len(window) >= 3 and sum(window) / len(window) > self.sustained_threshold:
             flags.append("SUSTAINED")
 
         return flags
 
     def _make_decision(self, prog: float, flags: List[str]) -> str:
-        """
-        Logic:
-        - If progressive risk hits the ceiling (t_block), block immediately.
-        - If we are in the warning zone (t_warn) AND any suspicious pattern 
-          (TREND, SUSTAINED, or SPIKE) is detected, upgrade to BLOCK.
-        """
-        # Absolute Block
+        """Decide ALLOW/WARN/BLOCK using progressive risk + flags."""
+        # Hard block
+        if "OBFUSCATION" in flags and "SPIKE" in flags:
+            return "BLOCK"
+
+        # Threshold decision
         if prog >= self.t_block:
+            base = "BLOCK"
+        elif prog >= self.t_warn:
+            base = "WARN"
+        else:
+            base = "ALLOW"
+
+        # Soft flags can upgrade WARN → BLOCK
+        soft_flags = [f for f in flags if f in ("TREND", "SUSTAINED", "SPIKE")]
+        if base == "WARN" and len(soft_flags) >= 2:
             return "BLOCK"
 
-        # Escalation Logic: WARN -> BLOCK
-        if prog >= self.t_warn:
-            # If we see any bad patterns while in WARN zone, we kill the conv
-            if any(f in flags for f in ["TREND", "SUSTAINED", "SPIKE", "OBFUSCATION"]):
-                return "BLOCK"
-            return "WARN"
-
-        # Obfuscation Check (even if prog is low)
-        if "OBFUSCATION" in flags and prog > (self.t_warn / 2):
-            return "BLOCK"
-
-        return "ALLOW"
+        return base
 
     @staticmethod
     def _slope(values: List[float]) -> float:
+        """Calculate slope of values (positive = rising risk)."""
         n = len(values)
-        if n < 2: return 0.0
         x_mean = (n - 1) / 2
         y_mean = sum(values) / n
         num = sum((i - x_mean) * (v - y_mean) for i, v in enumerate(values))
@@ -126,9 +133,6 @@ class DecisionMaker:
     def _risk_to_level(prog: float) -> int:
         return min(int(prog * 10), 10)
 
-    def reset(self):
-        self.risk_window.clear()
-        self.prev_progressive = 0.0
 
 # ── Turn record for CSV/logging ───────────────────────────────
 
@@ -237,7 +241,7 @@ class TCAAnalyzer:
         print(f"T{r.turn_id}  [{bar}]  prog={r.progressive_risk:.3f}  → {r.decision}{flags}")
         print(f"    {r.text[:70]!r}")
         print(f"    tox={r.toxicity_score:.2f}  thr={r.threat_score:.2f}  "
-              f"emo={r.emotion_score:.2f}  obf={r.obfuscation_score:.2f}  "
+              f"obf={r.obfuscation_score:.2f}  "
               f"shift={r.topic_shift_score:.2f}\n")
 
     def save_to_csv(self, path="tca_output.csv"):
