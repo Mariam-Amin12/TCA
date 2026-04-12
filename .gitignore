@@ -1,0 +1,10 @@
+
+mlruns/
+.vscode
+.deepeval
+data/
+NBF-LLM/
+mlflow.db
+*.pkl
+
+__pycache__/
