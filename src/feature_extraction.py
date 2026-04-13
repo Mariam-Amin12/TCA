@@ -18,33 +18,31 @@ class FeatureExtractor:
         user_msg: str,
         assistant_msg: str = "",
         user_msg2: str = "",
+        assistant_msg2: str = "",
     ) -> dict:
-        combined_text = f"{user_msg} {assistant_msg} {user_msg2}"
+        combined_text = f"{user_msg2} {assistant_msg2}".strip()
 
         features = {
             "toxicity_score":      self._get_toxicity_score(combined_text),
             "threat_score":        self._get_threat_score(combined_text),
-            "topic_shift_score":   self._get_topic_shift(user_msg, assistant_msg, user_msg2),
-            "cumulative_drift":    self._get_cumulative_drift(user_msg2),
+            "topic_shift_score":   self._get_topic_shift(user_msg, assistant_msg, user_msg2, assistant_msg2),
+            "cumulative_drift":    self._get_cumulative_drift(),
             "drift_acceleration":  self._get_drift_acceleration(),
-            "post_refusal":        self._get_post_refusal(assistant_msg, user_msg2),
+            "post_refusal":        self._get_post_refusal(assistant_msg2),
         }
         return features
 
-    def _get_post_refusal(self, assistant_msg, user_msg2):
-        if assistant_msg == "":
+    def _get_post_refusal(self, assistant_msg2):
+        if assistant_msg2 == "":
             return 0.0
 
-        assistant_emb = self.embedding_model.encode([assistant_msg])
+        assistant_emb = self.embedding_model.encode([assistant_msg2])
         assistant_pred = self.refusal_model.predict(assistant_emb)[0]
 
         if assistant_pred == 0:
             return 0.0
 
-        user_emb = self.embedding_model.encode([user_msg2])
-        user_pred = self.refusal_model.predict(user_emb)[0]
-
-        return float(user_pred)
+        return assistant_pred
 
 
     def reset(self):
@@ -55,8 +53,8 @@ class FeatureExtractor:
 
         
 
-    def _get_cumulative_drift(self, user_msg2: str) -> float:
-        current_embed = self._embed(user_msg2)
+    def _get_cumulative_drift(self) -> float:
+        current_embed = self.prev_embedding
         self.turn_embeddings.append(current_embed)
 
         if self.baseline_embedding is None:
@@ -91,14 +89,15 @@ class FeatureExtractor:
         raw = result["score"] if result["label"] == "LABEL_1" else 1.0 - result["score"]
         return raw
 
-    def _get_topic_shift(self, user_msg: str, assistant_msg: str, user_msg2: str) -> float:
+    def _get_topic_shift(self, user_msg: str, assistant_msg: str, user_msg2: str, assistant_msg2: str) -> float:
         embed_prev_context = self.prev_embedding if self.prev_embedding is not None else self._embed(user_msg + assistant_msg)
-        embed_current      = self._embed(user_msg + assistant_msg + user_msg2)
-
+        embed_current      = self._embed(assistant_msg2 + user_msg2)
+        if self.prev_embedding is None:
+            self.prev_embedding = embed_current
         topic_shift = round(self._cosine_distance(embed_current, embed_prev_context), 4)
 
         self.prev_embedding = embed_current
-
+       
         return topic_shift
 
     def _embed(self, text: str) -> List[float]:
