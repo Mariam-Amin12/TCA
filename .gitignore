@@ -8,3 +8,8 @@ mlflow.db
 *.pkl
 
 __pycache__/
+*.png
+tca_pipeline.egg-info
+*.txt
+*.json
+*.log

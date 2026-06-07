@@ -54,3 +54,8 @@ The paper emphasizes temporal, context-aware defense. This code maps to that ide
 
 4. Final safety decision:
 - A downstream classifier (Logistic Regression/XGBoost/SVM in notebook experiments) predicts attack/risk labels.
+
+
+
+benign data 
+https://github.com/icip-cas/ChatAlpaca/blob/main/README.md
